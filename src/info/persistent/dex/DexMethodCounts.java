@@ -29,97 +29,113 @@ import java.util.Set;
 import java.util.TreeMap;
 
 public class DexMethodCounts {
-    private static final PrintStream out = System.out;
-    public static int overallCount = 0;
+  private static final PrintStream out = System.out;
+  public static int overallCount = 0;
 
-    enum Filter {
-        ALL,
-        DEFINED_ONLY,
-        REFERENCED_ONLY
+  enum Filter {
+    ALL,
+    DEFINED_ONLY,
+    REFERENCED_ONLY
+  }
+
+  protected static class Node {
+    int count = 0;
+    boolean counted = false;
+    NavigableMap<String, Node> children = new TreeMap<String, Node>();
+
+    void output(String indent) {
+      if (indent.length() == 0) {
+        out.println("<root>: " + count);
+      }
+      indent += "    ";
+      for (String name : children.navigableKeySet()) {
+        Node child = children.get(name);
+        out.println(indent + name + ": " + child.count);
+        child.output(indent);
+      }
     }
 
-    protected static class Node {
-        int count = 0;
-        NavigableMap<String, Node> children = new TreeMap<String, Node>();
+    synchronized void calculate() {
+      if (counted) {
+        return;
+      }
+      counted = true;
+      overallCount += count;
+    }
+  }
 
-        void output(String indent) {
-            if (indent.length() == 0) {
-                out.println("<root>: " + count);
-                overallCount += count;
-            }
-            indent += "    ";
-            for (String name : children.navigableKeySet()) {
-                Node child = children.get(name);
-                out.println(indent + name + ": " + child.count);
-                child.output(indent);
-            }
+  public static void generate(
+      Node packageTree, DexData dexData, boolean includeClasses,
+      String packageFilter,int maxDepth, Filter filter, boolean quiet) {
+    MethodRef[] methodRefs = getMethodRefs(dexData, filter, quiet);
+
+    for (MethodRef methodRef : methodRefs) {
+      String classDescriptor = methodRef.getDeclClassName();
+      String packageName = includeClasses ?
+        Output.descriptorToDot(classDescriptor).replace('$', '.') :
+        Output.packageNameOnly(classDescriptor);
+      if (packageFilter != null &&
+          !packageName.startsWith(packageFilter)) {
+        continue;
+          }
+      String packageNamePieces[] = packageName.split("\\.");
+      Node packageNode = packageTree;
+      for (int i = 0; i < packageNamePieces.length && i < maxDepth; i++) {
+        packageNode.count++;
+        String name = packageNamePieces[i];
+        if (packageNode.children.containsKey(name)) {
+          packageNode = packageNode.children.get(name);
+        } else {
+          Node childPackageNode = new Node();
+          if (name.length() == 0) {
+            // This method is declared in a class that is part of the default package.
+            // Typical examples are methods that operate on arrays of primitive data types.
+            name = "<default>";
+          }
+          packageNode.children.put(name, childPackageNode);
+          packageNode = childPackageNode;
         }
+      }
+      packageNode.count++;
+    }
+      }
+
+  private static MethodRef[] getMethodRefs(DexData dexData, Filter filter, boolean quiet) {
+    MethodRef[] methodRefs = dexData.getMethodRefs();
+    if (!quiet) {
+      out.println("Read in " + methodRefs.length + " method IDs.");
+    }
+    if (filter == Filter.ALL) {
+      return methodRefs;
     }
 
-    public static void generate(
-            Node packageTree, DexData dexData, boolean includeClasses,
-            String packageFilter,int maxDepth, Filter filter) {
-        MethodRef[] methodRefs = getMethodRefs(dexData, filter);
-
-        for (MethodRef methodRef : methodRefs) {
-            String classDescriptor = methodRef.getDeclClassName();
-            String packageName = includeClasses ?
-                Output.descriptorToDot(classDescriptor).replace('$', '.') :
-                Output.packageNameOnly(classDescriptor);
-            if (packageFilter != null &&
-                    !packageName.startsWith(packageFilter)) {
-                continue;
-            }
-            String packageNamePieces[] = packageName.split("\\.");
-            Node packageNode = packageTree;
-            for (int i = 0; i < packageNamePieces.length && i < maxDepth; i++) {
-                packageNode.count++;
-                String name = packageNamePieces[i];
-                if (packageNode.children.containsKey(name)) {
-                    packageNode = packageNode.children.get(name);
-                } else {
-                    Node childPackageNode = new Node();
-                    if (name.length() == 0) {
-                        // This method is declared in a class that is part of the default package.
-                        // Typical examples are methods that operate on arrays of primitive data types.
-                        name = "<default>";
-                    }
-                    packageNode.children.put(name, childPackageNode);
-                    packageNode = childPackageNode;
-                }
-            }
-            packageNode.count++;
-        }
+    ClassRef[] externalClassRefs = dexData.getExternalReferences();
+    if (!quiet) {
+      out.println("Read in " + externalClassRefs.length +
+          " external class references.");
     }
-
-    private static MethodRef[] getMethodRefs(DexData dexData, Filter filter) {
-        MethodRef[] methodRefs = dexData.getMethodRefs();
-        out.println("Read in " + methodRefs.length + " method IDs.");
-        if (filter == Filter.ALL) {
-            return methodRefs;
-        }
-
-        ClassRef[] externalClassRefs = dexData.getExternalReferences();
-        out.println("Read in " + externalClassRefs.length +
-            " external class references.");
-        Set<MethodRef> externalMethodRefs = new HashSet<MethodRef>();
-        for (ClassRef classRef : externalClassRefs) {
-            Collections.addAll(externalMethodRefs, classRef.getMethodArray());
-        }
-        out.println("Read in " + externalMethodRefs.size() +
-            " external method references.");
-        List<MethodRef> filteredMethodRefs = new ArrayList<MethodRef>();
-        for (MethodRef methodRef : methodRefs) {
-            boolean isExternal = externalMethodRefs.contains(methodRef);
-            if ((filter == Filter.DEFINED_ONLY && !isExternal) ||
-                (filter == Filter.REFERENCED_ONLY && isExternal)) {
-                filteredMethodRefs.add(methodRef);
-            }
-        }
-        out.println("Filtered to " + filteredMethodRefs.size() + " " +
-            (filter == Filter.DEFINED_ONLY ? "defined" : "referenced") +
-            " method IDs.");
-        return filteredMethodRefs.toArray(
-            new MethodRef[filteredMethodRefs.size()]);
+    Set<MethodRef> externalMethodRefs = new HashSet<MethodRef>();
+    for (ClassRef classRef : externalClassRefs) {
+      Collections.addAll(externalMethodRefs, classRef.getMethodArray());
     }
+    if (!quiet) {
+      out.println("Read in " + externalMethodRefs.size() +
+          " external method references.");
+    }
+    List<MethodRef> filteredMethodRefs = new ArrayList<MethodRef>();
+    for (MethodRef methodRef : methodRefs) {
+      boolean isExternal = externalMethodRefs.contains(methodRef);
+      if ((filter == Filter.DEFINED_ONLY && !isExternal) ||
+          (filter == Filter.REFERENCED_ONLY && isExternal)) {
+        filteredMethodRefs.add(methodRef);
+          }
+    }
+    if (!quiet) {
+      out.println("Filtered to " + filteredMethodRefs.size() + " " +
+          (filter == Filter.DEFINED_ONLY ? "defined" : "referenced") +
+          " method IDs.");
+    }
+    return filteredMethodRefs.toArray(
+        new MethodRef[filteredMethodRefs.size()]);
+  }
 }
